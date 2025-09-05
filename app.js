@@ -20,7 +20,8 @@ const PORT = 3001;
 const JOBS_DIR = path.join(__dirname, 'jobs'); // pasta para armazenar zips temporários
 if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
 
-app.use(cors({ origin: ['http://localhost:3000','http://localhost:3001'] })); // ajuste conforme front
+app.use(cors({ origin: ['https://ipatinga-downloader-rops-avg4fa0bh-kauasantosdevs-projects.vercel.app'
+  ,'http://localhost:3001'] })); // ajuste conforme front
 app.use(express.json({ limit: '50mb' }));
 
 // in-memory job registry
