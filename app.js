@@ -6,22 +6,20 @@ const { v4: uuidv4 } = require('uuid');
 const EventEmitter = require('events');
 const archiver = require('archiver');
 const { PassThrough } = require('stream');
+const { spawn } = require('child_process'); // 🔹 para rodar yt-dlp
 
-const ytdl = require('@distube/ytdl-core'); // fork mais estável
 const ytSearch = require('yt-search');
-const ffmpeg = require('fluent-ffmpeg');
-const ffmpegPath = require('ffmpeg-static');
 const cors = require('cors');
-
-ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 const PORT = 3001;
 const JOBS_DIR = path.join(__dirname, 'jobs'); // pasta para armazenar zips temporários
 if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
 
-app.use(cors({ origin: ['https://ipatinga-downloader-rops-avg4fa0bh-kauasantosdevs-projects.vercel.app'
-  ,'http://localhost:3001'] })); // ajuste conforme front
+app.use(cors({ origin: [
+  'https://ipatinga-downloader-rops-avg4fa0bh-kauasantosdevs-projects.vercel.app',
+  'http://localhost:3001'
+]})); 
 app.use(express.json({ limit: '50mb' }));
 
 // in-memory job registry
@@ -31,6 +29,23 @@ async function searchYouTube(query) {
   const r = await ytSearch(query);
   if (!r.videos || r.videos.length === 0) throw new Error('Vídeo não encontrado');
   return r.videos[0].url;
+}
+
+// 🔹 função helper para baixar MP3 com yt-dlp
+function downloadWithYtDlp(url) {
+  const pass = new PassThrough();
+
+  const ytProcess = spawn('yt-dlp', [
+    '-o', '-',             // saída no stdout
+    '-f', 'bestaudio',
+    '-x', '--audio-format', 'mp3',
+    '--audio-quality', '128K'
+  ]);
+
+  ytProcess.stdout.pipe(pass);
+  ytProcess.stderr.on('data', d => console.error('yt-dlp:', d.toString()));
+
+  return { stream: pass, process: ytProcess };
 }
 
 // inicia o job: processa playlist e cria ZIP no disco, emitindo progresso
@@ -57,50 +72,34 @@ async function startJob(jobId, tracks) {
       try {
         youtubeUrl = await searchYouTube(query);
       } catch (err) {
-        // se não encontrar, marca como pulada e segue
         console.warn(`Não encontrado: ${query}`, err.message);
         jobs.get(jobId).processed++;
         emitter.emit('progress', { type: 'skip', track: track.name, processed: jobs.get(jobId).processed, total });
         continue;
       }
 
-      emitter.emit('progress', { type: 'stage', stage: `convertendo (${i+1}/${total})`, processed: i, total });
+      emitter.emit('progress', { type: 'stage', stage: `baixando/convertendo (${i+1}/${total})`, processed: i, total });
 
-      // converte para mp3 via ffmpeg em um PassThrough e adiciona ao zip
-      const audioStream = ytdl(youtubeUrl, { quality: 'highestaudio' });
-      const pass = new PassThrough();
-
-      // append antes para que archiver "reserve" o nome; o conteúdo virá do pass
+      const { stream, process } = downloadWithYtDlp(youtubeUrl);
       const safeName = `${track.name.replace(/[\/\\?%*:|"<>]/g, '_')}.mp3`;
-      archive.append(pass, { name: safeName });
 
-      // converter e pipe para pass; aguardamos fim da conversão para considerar processado
+      // append no zip
+      archive.append(stream, { name: safeName });
+
+      // espera yt-dlp terminar
       await new Promise((resolve, reject) => {
-        ffmpeg(audioStream)
-          .audioBitrate(128)
-          .format('mp3')
-          .on('error', (err) => {
-            console.error('Erro no FFmpeg (track):', safeName, err.message || err);
-            // finaliza pass para não travar zip
-            pass.end();
-            reject(err);
-          })
-          .on('end', () => {
-            // console.log('ffmpeg end for', safeName);
-            resolve();
-          })
-          .pipe(pass, { end: true });
+        process.on('exit', code => {
+          if (code === 0) resolve();
+          else reject(new Error(`yt-dlp falhou com código ${code}`));
+        });
+        process.on('error', reject);
       });
 
-      // marcou 1 track processada
       jobs.get(jobId).processed++;
       emitter.emit('progress', { type: 'progress', processed: jobs.get(jobId).processed, total });
     }
 
-    // finalize zip
     await archive.finalize();
-
-    // aguardar fechamento do stream de output
     await new Promise((resolve, reject) => {
       output.on('close', resolve);
       output.on('error', reject);
@@ -109,7 +108,7 @@ async function startJob(jobId, tracks) {
     jobs.get(jobId).status = 'done';
     emitter.emit('done', { downloadUrl: `/download/${jobId}`, filepath: zipPath });
 
-    // opcional: depois de X tempo remover o arquivo (cleanup). aqui removemos só depois de 10 minutos:
+    // cleanup após 10min
     setTimeout(() => {
       if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
       jobs.delete(jobId);
@@ -133,22 +132,16 @@ app.post('/download/start', (req, res) => {
   const emitter = new EventEmitter();
   jobs.set(jobId, { emitter, status: 'pending', total: 0, processed: 0, filepath: null });
 
-  // responde com jobId
   res.json({ jobId });
 
-  // inicia processamento async (não bloqueia resposta)
-  startJob(jobId, tracks).catch(err => {
-    console.error('startJob error:', err);
-  });
+  startJob(jobId, tracks).catch(err => console.error('startJob error:', err));
 });
 
 // SSE endpoint para progresso
 app.get('/events/:jobId', (req, res) => {
   const id = req.params.jobId;
   const job = jobs.get(id);
-  if (!job) {
-    return res.status(404).end();
-  }
+  if (!job) return res.status(404).end();
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -159,32 +152,19 @@ app.get('/events/:jobId', (req, res) => {
     try {
       res.write(`event: ${ev}\n`);
       res.write(`data: ${JSON.stringify(data)}\n\n`);
-    } catch (e) {
-      /* ignore */
-    }
+    } catch {}
   };
 
-  // send initial status
   send('status', { status: job.status, processed: job.processed, total: job.total });
 
   const onProgress = (data) => send('progress', data);
-  const onDone = (data) => {
-    send('done', data);
-    // depois de done fechamos a conexão
-    res.write('event: close\n');
-    res.write('data: {}\n\n');
-    res.end();
-  };
-  const onError = (data) => {
-    send('error', data);
-    res.end();
-  };
+  const onDone = (data) => { send('done', data); res.end(); };
+  const onError = (data) => { send('error', data); res.end(); };
 
   job.emitter.on('progress', onProgress);
   job.emitter.once('done', onDone);
   job.emitter.once('error', onError);
 
-  // se cliente fechar, removemos listeners
   req.on('close', () => {
     job.emitter.off('progress', onProgress);
     job.emitter.off('done', onDone);
@@ -196,15 +176,16 @@ app.get('/events/:jobId', (req, res) => {
 app.get('/download/:jobId', (req, res) => {
   const id = req.params.jobId;
   const job = jobs.get(id);
-  if (!job || job.status !== 'done' || !job.filepath) return res.status(404).json({ error: 'Job não encontrado / não pronto' });
+  if (!job || job.status !== 'done' || !job.filepath) {
+    return res.status(404).json({ error: 'Job não encontrado / não pronto' });
+  }
 
   const stat = fs.statSync(job.filepath);
   res.setHeader('Content-Disposition', `attachment; filename="playlist-${id}.zip"`);
   res.setHeader('Content-Type', 'application/zip');
   res.setHeader('Content-Length', stat.size);
 
-  const stream = fs.createReadStream(job.filepath);
-  stream.pipe(res);
+  fs.createReadStream(job.filepath).pipe(res);
 });
 
 app.listen(PORT, () => console.log(`Servidor rodando em http://localhost:${PORT}`));
