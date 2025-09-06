@@ -6,7 +6,7 @@ const EventEmitter = require('events');
 const archiver = require('archiver');
 const { PassThrough } = require('stream');
 const { spawn } = require('child_process');
-const pLimit = require('p-limit');
+const pLimit = require('p-limit').default;
 const ytSearch = require('yt-search');
 const cors = require('cors');
 
