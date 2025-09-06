@@ -33,14 +33,21 @@ async function searchYouTube(query) {
 
 // 🔹 função helper para baixar MP3 com yt-dlp
 function downloadWithYtDlp(url) {
+  
   const pass = new PassThrough();
-
+  
   const ytProcess = spawn('yt-dlp', [
     '-o', '-',             // saída no stdout
     '-f', 'bestaudio',
     '-x', '--audio-format', 'mp3',
-    '--audio-quality', '128K'
+    '--audio-quality', '128K',
+    url
   ]);
+  if (!url) {
+  throw new Error("URL inválida para yt-dlp");
+}
+
+
 
   ytProcess.stdout.pipe(pass);
   ytProcess.stderr.on('data', d => console.error('yt-dlp:', d.toString()));
