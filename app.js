@@ -37,6 +37,7 @@ function downloadWithYtDlp(url) {
   const pass = new PassThrough();
   
   const ytProcess = spawn('yt-dlp', [
+    '--cookies', path.join(__dirname, 'cookies.txt'),
     '-o', '-',             // saída no stdout
     '-f', 'bestaudio',
     '-x', '--audio-format', 'mp3',
