@@ -36,8 +36,14 @@ function downloadWithYtDlp(url) {
   
   const pass = new PassThrough();
   
+  const COOKIES_PATH = path.join(__dirname, 'cookies.txt');
+
+if (process.env.YOUTUBE_COOKIES) {
+  fs.writeFileSync(COOKIES_PATH, process.env.YOUTUBE_COOKIES);
+}
+
   const ytProcess = spawn('yt-dlp', [
-    '--cookies', path.join(__dirname, 'cookies.txt'),
+    ...(fs.existsSync(COOKIES_PATH) ? ['--cookies', COOKIES_PATH] : []),
     '-o', '-',             // saída no stdout
     '-f', 'bestaudio',
     '-x', '--audio-format', 'mp3',
