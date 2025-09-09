@@ -12,7 +12,7 @@ const ytSearch = require('yt-search');
 const cors = require('cors');
 
 const app = express();
-const PORT = 3001;
+const PORT = 308701;
 const JOBS_DIR = path.join(__dirname, 'jobs'); // pasta para armazenar zips temporários
 if (!fs.existsSync(JOBS_DIR)) fs.mkdirSync(JOBS_DIR, { recursive: true });
 
